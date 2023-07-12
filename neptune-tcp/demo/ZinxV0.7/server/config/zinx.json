@@ -1,0 +1,8 @@
+{
+  "Name": "ZinxV0.7",
+  "IP": "127.0.0.1",
+  "IPVersion": "tcp4",
+  "Port": 7777,
+  "ZinxVersion": "V0.7",
+  "ZinxMaxConn": 3
+}

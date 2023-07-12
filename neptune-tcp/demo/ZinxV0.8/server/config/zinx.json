@@ -1,0 +1,10 @@
+{
+  "Name": "ZinxV0.8",
+  "IP": "127.0.0.1",
+  "IPVersion": "tcp4",
+  "Port": 2333,
+  "ZinxVersion": "V0.8",
+  "ZinxMaxConn": 3,
+  "ZinxWorkerPoolSize": 20,
+  "ZinxTaskQueueSize": 256
+}
