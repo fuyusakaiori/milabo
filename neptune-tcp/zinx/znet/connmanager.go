@@ -3,7 +3,7 @@ package znet
 import (
 	"errors"
 	"fmt"
-	"neptune-go/src/zinx/ziface"
+	"neptune-golang/neptune-tcp/zinx/ziface"
 	"sync"
 )
 

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"neptune-go/src/nep/ZinxV0.6/server/router"
-	"neptune-go/src/zinx/znet"
+	"neptune-golang/neptune-tcp/demo/ZinxV0.6/server/router"
+	"neptune-golang/neptune-tcp/zinx/znet"
 )
 
 func main() {

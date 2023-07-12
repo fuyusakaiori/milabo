@@ -1,6 +1,6 @@
 package znet
 
-import "neptune-go/src/zinx/ziface"
+import "neptune-golang/neptune-tcp/zinx/ziface"
 
 // Request 请求
 type Request struct {

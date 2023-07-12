@@ -1,7 +1,7 @@
 package znet
 
 import (
-	"neptune-go/src/zinx/ziface"
+	"neptune-golang/neptune-tcp/zinx/ziface"
 )
 
 type BaseHandler struct {

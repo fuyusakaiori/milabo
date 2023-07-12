@@ -2,8 +2,8 @@ package router
 
 import (
 	"fmt"
-	"neptune-go/src/zinx/ziface"
-	"neptune-go/src/zinx/znet"
+	"neptune-golang/neptune-tcp/zinx/ziface"
+	"neptune-golang/neptune-tcp/zinx/znet"
 )
 
 type PingRouter struct {

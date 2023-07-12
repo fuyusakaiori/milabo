@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"neptune-go/src/zinx/ziface"
+	"neptune-golang/neptune-tcp/zinx/ziface"
 )
 
 type Configuration struct {

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"neptune-go/src/zinx/znet"
+	"neptune-golang/neptune-tcp/zinx/znet"
 )
 
 func main() {

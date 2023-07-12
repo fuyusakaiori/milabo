@@ -3,8 +3,8 @@ package znet
 import (
 	"fmt"
 	"io"
-	"neptune-go/src/zinx/utils"
-	"neptune-go/src/zinx/ziface"
+	"neptune-golang/neptune-tcp/zinx/utils"
+	"neptune-golang/neptune-tcp/zinx/ziface"
 	"net"
 	"sync"
 )
