@@ -52,6 +52,7 @@ func (server *ProxyServer) handler(responseWriter http.ResponseWriter, request *
 }
 
 func main() {
+	// URL 重写规则: 被代理服务器 URL 是 "/", 请求中的 URL 就需要写全 "/base/timeout"
 	server := &ProxyServer{proxyServerAddr}
 	server.Run()
 

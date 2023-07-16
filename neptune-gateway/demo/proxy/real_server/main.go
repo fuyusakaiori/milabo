@@ -58,6 +58,7 @@ func (server *RealServer) ErrorHandler(responseWriter http.ResponseWriter, reque
 }
 
 func (server *RealServer) TimeoutHandler(responseWriter http.ResponseWriter, request *http.Request) {
+	log.Println("time out handler")
 	time.Sleep(time.Second * 6)
 	responseWriter.WriteHeader(http.StatusOK)
 	if _, err := io.WriteString(responseWriter, "timeout handler"); err != nil {
