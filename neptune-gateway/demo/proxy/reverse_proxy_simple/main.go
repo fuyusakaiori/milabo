@@ -22,6 +22,6 @@ func main() {
 	// 3. 调用内部工具类创建反向代理服务器 - 相当于 handler 而不是 server
 	reverseProxy := httputil.NewSingleHostReverseProxy(beProxyUrl)
 	// 4. 启动反向代理服务器
-	log.Println("starting reverse proxy: " + proxyAddr)
+	log.Println("starting reverse gateway: " + proxyAddr)
 	log.Fatalln(http.ListenAndServe(proxyAddr, reverseProxy))
 }

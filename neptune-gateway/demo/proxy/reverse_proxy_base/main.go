@@ -17,7 +17,7 @@ type ProxyServer struct {
 }
 
 func (server *ProxyServer) Run() {
-	log.Printf("starting proxy server :%s", server.RemoteAddr)
+	log.Printf("starting gateway server :%s", server.RemoteAddr)
 	router := http.NewServeMux()
 	router.HandleFunc("/", server.handler)
 	realServer := &http.Server{

@@ -56,15 +56,15 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 	// 2. 创建修改响应体的方法
 	modify := func(response *http.Response) error {
 		if response.StatusCode != http.StatusOK {
-			return errors.New("reverse proxy receive response status code not equal 200")
+			return errors.New("reverse gateway receive response status code not equal 200")
 		}
 		// 1. 获取响应体中的内容
 		oldPayLoad, err := ioutil.ReadAll(response.Body)
 		if err != nil {
-			log.Fatalf("reverse proxy read response err: %v", err)
+			log.Fatalf("reverse gateway read response err: %v", err)
 		}
 		// 2. 添加新的内容
-		newPayLoad := []byte("neptune golang reverse proxy " + string(oldPayLoad))
+		newPayLoad := []byte("neptune golang reverse gateway " + string(oldPayLoad))
 		// 3. 重新更新响应体中的内容
 		response.Body = ioutil.NopCloser(bytes.NewBuffer(newPayLoad))
 		response.ContentLength = int64(len(newPayLoad))
@@ -86,6 +86,6 @@ func main() {
 	// 3. 调用内部工具类创建反向代理服务器 - 相当于 handler 而不是 server
 	reverseProxy := NewSingleHostReverseProxy(beProxyUrl)
 	// 4. 启动反向代理服务器
-	log.Println("starting reverse proxy: " + proxyAddr)
+	log.Println("starting reverse gateway: " + proxyAddr)
 	log.Fatalln(http.ListenAndServe(proxyAddr, reverseProxy))
 }
