@@ -42,7 +42,7 @@ type MessageListener interface {
 type Channel interface {
 	Conn
 	Agent
-	ReadLoop(listener MessageListener) error
+	ReceiveMessage(listener MessageListener) error
 	SetWriteWait(timeout time.Duration)
 	SetReadWait(timeout time.Duration)
 	Close() error
@@ -53,7 +53,7 @@ type Agent interface {
 	// GetChannelID 获取 ChannelID
 	GetChannelID() string
 	// PushMessage 发送消息
-	PushMessage(message []byte) error
+	SendMessage(message []byte) error
 }
 
 // Client 客户端
