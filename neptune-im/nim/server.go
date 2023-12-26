@@ -65,9 +65,9 @@ type Client interface {
 	// SetDialer: 设置建立连接相关信息
 	SetDialer(dialer Dialer)
 	// Connect 建立连接 ip:port
-	Connect(address string)
+	Connect(address string) error
 	// SendMessage: 发送消息
-	SendMessage(message []byte)
+	SendMessage(message []byte) error
 	// ReadMessage: 读取消息
 	ReadMessage() (Frame, error)
 	// Close: 关闭客户端
