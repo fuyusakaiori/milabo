@@ -17,7 +17,7 @@ type ChannelMapImpl struct {
 	channels *sync.Map
 }
 
-func newChannelMap() ChannelMap {
+func NewChannelMap() ChannelMap {
 	return &ChannelMapImpl{
 		channels: new(sync.Map),
 	}

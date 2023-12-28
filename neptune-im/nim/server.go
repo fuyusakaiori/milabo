@@ -9,6 +9,8 @@ import (
 type Server interface {
 	// Start: 启动服务端
 	Start() error
+	// SendMessage 发送消息
+	SendMessage(channelId string, message []byte) error
 	// Shutdown: 关闭服务端
 	Shutdown()
 	// SetChannelMap: 设置连接管理器

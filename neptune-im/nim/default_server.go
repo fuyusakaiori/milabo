@@ -29,6 +29,11 @@ type DefaultServer struct {
 	once    sync.Once
 }
 
+func (server *DefaultServer) SendMessage(channelId string, message []byte) error {
+	//TODO implement me
+	panic("implement me")
+}
+
 func NewServer() Server {
 	return &DefaultServer{}
 }
@@ -51,7 +56,7 @@ func (server *DefaultServer) Start() error {
 	}
 	// 4. 设置连接管理器
 	if server.ChannelMap == nil {
-		server.ChannelMap = newChannelMap()
+		server.ChannelMap = NewChannelMap()
 	}
 	// 5. http 服务器绑定处理逻辑
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {

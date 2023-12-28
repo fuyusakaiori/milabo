@@ -31,6 +31,12 @@ type TcpConn struct {
 	net.Conn
 }
 
+func NewConn(conn net.Conn) nim.Conn {
+	return &TcpConn{
+		Conn: conn,
+	}
+}
+
 func (conn *TcpConn) ReadFrame() (nim.Frame, error) {
 	// 1. 读取事件类型
 	opcode, err := endian.ReadUint8(conn)
