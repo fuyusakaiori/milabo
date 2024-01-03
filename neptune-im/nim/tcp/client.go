@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"errors"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"github.com/sirupsen/logrus"
@@ -32,17 +33,12 @@ type Client struct {
 	clientId   string
 	clientName string
 	state      int32
+	conn       nim.Conn
 	options    ClientOptions
 	once       sync.Once
 }
 
 func NewClient(clientId, clientName string, options ClientOptions) nim.Client {
-	if clientId == "" {
-
-	}
-	if clientName == "" {
-
-	}
 	if options.connectWait == 0 {
 		options.connectWait = connectWait
 	}
@@ -136,17 +132,46 @@ func (client *Client) ping(conn net.Conn) error {
 }
 
 func (client *Client) SendMessage(message []byte) error {
-	//TODO implement me
-	panic("implement me")
+	// 1. 判断连接状态是否正常
+	if atomic.LoadInt32(&client.state) == 0 {
+		return errors.New("client state is closed")
+	}
+	// 2. 上锁
+	client.Lock()
+	defer client.Unlock()
+	if client.conn == nil {
+		return errors.New("client connect interrupted")
+	}
+	// 3. 设置写超时时间
+	_ = client.conn.SetWriteDeadline(time.Now().Add(client.options.writeWait))
+	// 4. 发送消息
+	return client.conn.WriteFrame(nim.OpBinary, message)
 }
 
 func (client *Client) ReadMessage() (nim.Frame, error) {
-	//TODO implement me
-	panic("implement me")
+	if client.state == 0 || client.conn == nil {
+		return nil, errors.New("client connect interrupted")
+	}
+	if client.options.heartBeat > 0 {
+		_ = client.conn.SetReadDeadline(time.Now().Add(client.options.readWait))
+	}
+	frame, err := client.conn.ReadFrame()
+	if err != nil {
+		return nil, err
+	}
+	if frame.GetOpCode() == nim.OpClose {
+		return nil, errors.New("server close connect")
+	}
+	return frame, nil
 }
 
 func (client *Client) Close() {
 	client.once.Do(func() {
-
+		if client.conn == nil {
+			return
+		}
+		_ = client.conn.WriteFrame(nim.OpClose, nil)
+		_ = client.conn.Close()
+		atomic.CompareAndSwapInt32(&client.state, 1, 0)
 	})
 }

@@ -1,0 +1,63 @@
+syntax = "proto3";
+package pkt;
+option go_package = "./pkt";
+
+// 消息类型
+enum MessageType {
+   // 请求消息
+   Request = 0;
+   // 响应消息
+   Response = 1;
+   // 推送消息
+   Push = 2;
+}
+
+// 消息状态
+enum MessageStatus {
+    // 正常状态
+    Success = 0;
+    // 会话失效
+    NotFoundSession = 10;
+    // 消息没有目标
+    NotFoundDestination = 100;
+    // 消息内容无效
+    InvalidPacketBody = 101;
+    // 消息类型无效
+    InvalidCommand = 103;
+    // 未登录
+    UnAuthorized = 105;
+    // 系统异常
+    SystemException = 500;
+    // 系统不支持
+    SystemNotSupport = 501;
+}
+
+enum MetaType {
+    int = 0;
+    string = 1;
+    float = 2;
+}
+
+message Meta {
+    string key = 1;
+    string value = 2;
+    MessageType type = 3;
+}
+
+// 协议头
+message Header {
+    // 指令类型
+    string command = 1;
+    // 连接 id
+    string channelId = 2;
+    // 序列号
+    uint32 sequence = 3;
+    // 消息类型
+    MessageType type = 4;
+    // 消息状态
+    MessageStatus status = 5;
+    // 消息目标
+    string destination = 6;
+    // 消息长度
+    repeated Meta meta = 7;
+}

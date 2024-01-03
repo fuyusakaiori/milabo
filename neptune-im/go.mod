@@ -4,6 +4,7 @@ go 1.21.5
 
 require (
 	github.com/gobwas/ws v1.3.1
+	github.com/segmentio/ksuid v1.0.4
 	github.com/sirupsen/logrus v1.9.3
 )
 
