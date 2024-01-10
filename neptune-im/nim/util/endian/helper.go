@@ -16,6 +16,16 @@ func ReadUint8(reader io.Reader) (uint8, error) {
 	return uint8(buf[0]), nil
 }
 
+func ReadUint16(reader io.Reader) (uint16, error) {
+	// 1. 初始化字节数组
+	buf := make([]byte, 2)
+	// 2. 读取字节流
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint16(buf), nil
+}
+
 func ReadUint32(reader io.Reader) (uint32, error) {
 	// 1. 初始化字节数组
 	bytes := make([]byte, 4)
@@ -24,6 +34,16 @@ func ReadUint32(reader io.Reader) (uint32, error) {
 		return 0, err
 	}
 	return binary.LittleEndian.Uint32(bytes), nil
+}
+
+func ReadFixedBytes(length int, reader io.Reader) ([]byte, error) {
+	// 1. 初始化字节数组
+	bytes := make([]byte, length)
+	// 2. 读取字节流
+	if _, err := io.ReadFull(reader, bytes); err != nil {
+		return nil, err
+	}
+	return bytes, nil
 }
 
 // 读取字节流中的任意长度的字节: 规定基于 tcp 协议的自定义协议格式
@@ -52,12 +72,24 @@ func WriteUint8(writer io.Writer, value uint8) error {
 	return nil
 }
 
+func WriteUint16(writer io.Writer, value uint16) error {
+	// 1. 初始化字节数组
+	buf := make([]byte, 2)
+	// 2. 数据内容填入数组
+	binary.LittleEndian.PutUint16(buf, value)
+	// 3. 写入连接中
+	if _, err := writer.Write(buf); err != nil {
+		return err
+	}
+	return nil
+}
+
 func WriteUint32(writer io.Writer, value uint32) error {
 	// 1. 初始化字节数组
 	buf := make([]byte, 4)
 	// 2. 数据内容填入数组
 	binary.LittleEndian.PutUint32(buf, value)
-	// 2. 写入连接中
+	// 3. 写入连接中
 	if _, err := writer.Write(buf); err != nil {
 		return err
 	}

@@ -1,6 +1,6 @@
 syntax = "proto3";
 package pkt;
-option go_package = "./pkt";
+option go_package = "../pkt";
 
 // 消息类型
 enum MessageType {
@@ -10,6 +10,11 @@ enum MessageType {
    Response = 1;
    // 推送消息
    Push = 2;
+}
+
+enum SerializerType {
+    ProtoBuf = 0;
+    Json = 1;
 }
 
 // 消息状态
