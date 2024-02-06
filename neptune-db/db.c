@@ -34,6 +34,7 @@ InputBuffer* new_input_buffer() {
     input_buffer->buffer_length = 0;
     // 4. 初始化读取字符串长度大小
     input_buffer->input_length = 0;
+    return input_buffer;
 }
 
 void read_input(InputBuffer* input_buffer) {
@@ -49,6 +50,13 @@ void read_input(InputBuffer* input_buffer) {
     input_buffer->buffer[input_len - 1] = 0;
 }
 
+void close_input_buffer(InputBuffer* input_buffer) {
+    // 释放真正缓冲区占用的内存
+    free(input_buffer->buffer);
+    // 释放缓冲区封装类占用的内存
+    free(input_buffer);
+}
+
 
 int main() {
     // 1. 初始化输入缓冲区
@@ -62,6 +70,7 @@ int main() {
 
         // 2.3 判断是否退出
         if (strcmp(input_buffer->buffer, EXIT) == 0){
+            close_input_buffer(input_buffer);
             exit(EXIT_SUCCESS);
         } else {
             printf("unrecognized command '%s'.\n", input_buffer->buffer);
