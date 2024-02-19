@@ -97,8 +97,8 @@ void print_row(Row* row) {
 void serialize_row(Row *source, void *destination) {
     // 指针运算: 将内容拷贝到指定的内存地址
     memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
-    memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
-    memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
+    strncpy(destination + USERNAME_OFFSET, source->username, USERNAME_SIZE);
+    strncpy(destination + EMAIL_OFFSET, source->email, EMAIL_SIZE);
 }
 
 // 反序列化每行内容
