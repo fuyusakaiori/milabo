@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 
 #define EXIT ".exit"
 #define INSERT "insert"
@@ -14,97 +17,6 @@
 #define COLUMN_USERNAME_SIZE 32
 #define TABLE_MAX_PAGES 100
 
-
-// 硬编码行
-typedef struct {
-    // 主键
-    uint32_t id;
-    // 内容
-    char username[COLUMN_USERNAME_SIZE + 1];
-    char email[COLUMN_EMAIL_SIZE + 1];
-} Row;
-
-const uint32_t ID_SIZE = size_of_attribute(Row, id);
-const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
-const uint32_t EMAIL_SIZE = size_of_attribute(Row, email)
-const uint32_t ID_OFFSET = 0;
-const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
-const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
-const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + USERNAME_OFFSET;
-
-// 打印查询的内容
-void print_row(Row* row) {
-    printf("(%d, %s, %s)\n", row->id, row->username, row->email);
-}
-
-// 序列化每行内容
-void serialize_row(Row *source, void *destination) {
-    // 指针运算: 将内容拷贝到指定的内存地址
-    memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
-    memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
-    memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
-}
-
-// 反序列化每行内容
-void deserialize_row(void *source, Row *destination) {
-    memcpy(&(destination->id), source + ID_OFFSET, ID_SIZE);
-    memcpy(&(destination->username), source + USERNAME_OFFSET, USERNAME_SIZE);
-    memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
-}
-
-// 表结构
-typedef struct {
-    uint32_t num_rows;
-    void *pages[TABLE_MAX_PAGES];
-} Table;
-
-// 每页大小 4KB
-const uint32_t PAGE_SIZE = 4096;
-// 每页的行数
-const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
-// 每张表的行数
-const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
-
-// 初始化表
-Table* new_table(){
-    // 1. 分配表内存
-    Table* table = (Table*)malloc(sizeof(Table));
-    // 2. 初始化表的行号为 0
-    table->num_rows = 0;
-    // 3. 初始化页内存
-    for (uint32_t index = 0; index < TABLE_MAX_PAGES; index++) {
-        table->pages[index] = NULL;
-    }
-    return table;
-}
-
-// 释放表内存
-void free_table(Table* table) {
-    // 如果页内存为空, 那么就需要释放
-    // TODO 如果某个页中还有数据, 那不会造成内存泄露吗？
-    for (uint32_t index = 0; table->pages[index]; index++) {
-        free(table->pages[index]);
-    }
-    free(table);
-}
-
-// 读取表中的行记录
-void* row_slot(Table *table, uint32_t row_num) {
-    // 1. 计算行所在的页
-    uint32_t page_num = row_num / ROWS_PER_PAGE;
-    // 2. 获取对应的页
-    void *page = table->pages[page_num];
-    // 3. 判断页是否为空, 如果为空就分配内存
-    if (page == NULL) {
-        page = table->pages[page_num] = malloc(PAGE_SIZE);
-    }
-    // 4. 计算行在页中的偏移量
-    uint32_t row_offset = row_num % ROWS_PER_PAGE;
-    // 5. 行在页中的偏移量换算成字节偏移量
-    uint32_t byte_offset = row_offset * ROW_SIZE;
-    // 6. 指针运算
-    return page + byte_offset;
-}
 
 // 输入缓冲区
 struct InputBuffer_t {
@@ -157,6 +69,250 @@ void close_input_buffer(InputBuffer *input_buffer) {
     free(input_buffer);
 }
 
+
+
+// 硬编码行
+typedef struct {
+    // 主键
+    uint32_t id;
+    // 内容
+    char username[COLUMN_USERNAME_SIZE + 1];
+    char email[COLUMN_EMAIL_SIZE + 1];
+} Row;
+
+const uint32_t ID_SIZE = size_of_attribute(Row, id);
+const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
+const uint32_t EMAIL_SIZE = size_of_attribute(Row, email)
+const uint32_t ID_OFFSET = 0;
+const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
+const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
+const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
+
+// 打印查询的内容
+void print_row(Row* row) {
+    printf("(%d, %s, %s)\n", row->id, row->username, row->email);
+}
+
+// 序列化每行内容
+void serialize_row(Row *source, void *destination) {
+    // 指针运算: 将内容拷贝到指定的内存地址
+    memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
+    memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
+    memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
+}
+
+// 反序列化每行内容
+void deserialize_row(void *source, Row *destination) {
+    memcpy(&(destination->id), source + ID_OFFSET, ID_SIZE);
+    memcpy(&(destination->username), source + USERNAME_OFFSET, USERNAME_SIZE);
+    memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
+}
+
+// 每页大小 4KB
+const uint32_t PAGE_SIZE = 4096;
+// 每页的行数
+const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
+// 每张表的行数
+const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+
+// 内存调度器
+typedef struct {
+    // 文件描述符: 用于判断文件的状态
+    int file_descriptor;
+    // 文件大小
+    uint32_t file_length;
+    // 管理的内存
+    void* pages[TABLE_MAX_PAGES];
+} Pager;
+
+// 初始化内存调度器
+Pager* pager_open(const char* filename) {
+    // 1. 打开文件
+    int fd = open(filename, O_RDWR | O_CREAT | S_IWUSR | S_IRUSR);
+    // 2. 判断是否成功打开文件
+    if (fd == -1) {
+        printf("unable to open file\n");
+        exit(EXIT_FAILURE);
+    }
+    // 3. 从文件末尾开始读取并返回文件大小: off_t 表示文件偏移量的类型, 通常是 long / long long
+    off_t file_length = lseek(fd, 0, SEEK_END);
+    // 4. 给调度器分配内存
+    Pager* pager = (Pager*)malloc(sizeof(Pager));
+    // 5. 赋值文件描述符
+    pager->file_descriptor = fd;
+    // 6. 赋值文件长度
+    pager->file_length = file_length;
+    // 7. 初始化页内存为空
+    for (uint32_t index = 0; index < TABLE_MAX_PAGES; index++) {
+        pager->pages[index] = NULL;
+    }
+    return pager;
+}
+
+// 调度磁盘数据到页内存中
+void* get_page(Pager* pager, uint32_t page_num) {
+    // 1. 判断页号是否超过限制
+    if (page_num > TABLE_MAX_PAGES) {
+        printf("tried to fetch page number out of bounds. %d > %d\n", page_num, TABLE_MAX_PAGES);
+        exit(EXIT_FAILURE);
+    }
+    // 2. 判断该页的数据是否已经被调度到内存中
+    if (pager->pages[page_num] == NULL) {
+        // 2.1 给页内存分配空间
+        void* page = malloc(PAGE_SIZE);
+        // 2.2 计算总的页数
+        uint32_t num_pages = pager->file_length / PAGE_SIZE;
+        // 2.3 判断是否新增了一页
+        if (pager->file_length % PAGE_SIZE) {
+            num_pages += 1;
+        }
+        // 2.4 判断需要加载的页内容是否为中间的页
+        // TODO 页号有可能会超过总的页数吗?
+        if (page_num <= num_pages) {
+            // 2.4.1 从当前页开始向后读取 => 页内存时连续的
+            lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+            // 2.4.2 开始读取页的内容
+            ssize_t bytes_read = read(pager->file_descriptor, page, PAGE_SIZE);
+            // 2.4.3 判断是否读取成功
+            if (bytes_read == -1) {
+                // TODO errno 是什么?
+                printf("error reading file: %d\n", errno);
+                exit(EXIT_FAILURE);
+            }
+        }
+        pager->pages[page_num] = page;
+    }
+    return pager->pages[page_num];
+}
+
+// 持久化页内存的数据到磁盘中
+void flush_page(Pager* pager, uint32_t page_num, uint32_t size) {
+    // 1. 判断页内存指针是否为空
+    if (pager->pages[page_num] == NULL) {
+        printf("tried to flush null page\n");
+        exit(EXIT_FAILURE);
+    }
+    // 2. 获取页在文件中的位置
+    off_t offset = lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+    // 3. 判断是否读取成功
+    if (offset == -1) {
+        printf("error seeking: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+    // 4. 持久化内存
+    ssize_t bytes_written = write(pager->file_descriptor, pager->pages[page_num], size);
+    // 5. 判断是否写入成功
+    if (bytes_written == -1) {
+        printf("error writing: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+}
+
+// 表结构
+typedef struct {
+    // 行号
+    uint32_t num_rows;
+    // 内存调度器
+    Pager* pager;
+
+    void *pages[TABLE_MAX_PAGES];
+} Table;
+
+// 初始化表
+Table* db_open(const char* filename){
+    // 1. 初始化内存调度器
+    Pager* pager = pager_open(filename);
+    // 2. 初始化行号
+    uint32_t num_rows = pager->file_length / ROW_SIZE;
+    // 3. 分配表内存
+    Table* table = (Table*)malloc(sizeof(Table));
+    // 4. 赋值行号
+    table->num_rows = num_rows;
+    // 5. 赋值内存调度器
+    table->pager = pager;
+    return table;
+}
+
+void db_close(Table* table) {
+    // 1. 获取调度器和总页数
+    Pager* pager = table->pager;
+    uint32_t num_pages = table->num_rows / ROWS_PER_PAGE;
+    // 2. 遍历所有页内存
+    for (uint32_t index = 0; index < num_pages; index++) {
+        // 2.1 如果页内存为空, 那么就跳过
+        if (pager->pages[index] == NULL) {
+            continue;
+        }
+        // 2.2 持久化页内存
+        flush_page(pager, index, PAGE_SIZE);
+        // 2.3 释放页内存空间
+        free(pager->pages[index]);
+        // 2.4 指针指向空
+        pager->pages[index] = NULL;
+        // 注: 先释放内存再将指针指向空, 先指针指向空会造成内存泄露
+    }
+    // 3. 计算是否存在跨页写入
+    uint32_t num_additional_rows = table->num_rows % ROWS_PER_PAGE;
+    if (num_additional_rows > 0) {
+        // 3.1 跨页写入的页号就是总的页数
+        uint32_t page_num = num_pages;
+        // 3.2 判断需要跨页写入的数据是否还在内存中
+        if (pager->pages[page_num] != NULL) {
+            // 3.3 持久化需要跨页写入的数据
+            flush_page(pager, page_num, num_additional_rows * ROW_SIZE);
+            // 3.4 释放页内存
+            free(pager->pages[page_num]);
+            // 3.5 指针指向空
+            pager->pages[page_num] = NULL;
+        }
+    }
+    // 4. 关闭文件
+    int result = close(pager->file_descriptor);
+    // 5. 判断文件是否关闭成功
+    if (result == -1) {
+        printf("closing db file error.\n");
+        exit(EXIT_FAILURE);
+    }
+    // 6. 判断是否还有没有释放的内存: 为什么还要判断呢？
+    for (uint32_t index = 0; index < TABLE_MAX_PAGES; index++) {
+        // 6.1 获取页内存
+        void* page = pager->pages[index];
+        // 6.2 判断是否已经释放过内存
+        if (page) {
+            free(page);
+            pager->pages[index] = NULL;
+        }
+    }
+    // 7. 释放内存调度器和表
+    free(pager);
+    free(table);
+}
+
+// 读取表中的行记录
+void* row_slot(Table *table, uint32_t row_num) {
+    // 1. 计算行所在的页
+    uint32_t page_num = row_num / ROWS_PER_PAGE;
+    // 2. 获取对应的页内存
+    void* page = get_page(table->pager, page_num);
+    // 3. 计算行在页中的偏移量
+    uint32_t row_offset = row_num % ROWS_PER_PAGE;
+    // 4. 行在页中的偏移量换算成字节偏移量
+    uint32_t byte_offset = row_offset * ROW_SIZE;
+    // 5. 指针运算
+    return page + byte_offset;
+}
+
+// 释放表内存
+void free_table(Table* table) {
+    // 如果页内存为空, 那么就需要释放
+    // TODO 如果某个页中还有数据, 那不会造成内存泄露吗？
+    for (uint32_t index = 0; table->pages[index]; index++) {
+        free(table->pages[index]);
+    }
+    free(table);
+}
+
+
 // 元命令类型
 typedef enum {
     META_COMMAND_SUCCESS,
@@ -184,6 +340,7 @@ typedef struct {
     Row row_to_insert; // 仅用于插入语句
 } Statement;
 
+// SQL 执行结果
 typedef enum {
     EXECUTE_SUCCESS,
     EXECUTE_TABLE_FULL
@@ -193,8 +350,7 @@ typedef enum {
 MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table* table) {
     // 判断是否为退出的元命令
     if (strcmp(input_buffer->buffer, EXIT) == 0) {
-        close_input_buffer(input_buffer);
-        free_table(table);
+        db_close(table);
         exit(EXIT_SUCCESS);
         // return META_COMMAND_SUCCESS;
     }
@@ -286,18 +442,25 @@ ExecuteResult execute_statement(Statement *statement, Table* table) {
 }
 
 // TODO 为什么存在内存泄露的问题
-int main() {
-    // 1. 初始化表结构
-    Table* table = new_table();
-    // 2. 初始化输入缓冲区
+int main(int argc, char* argv[]) {
+    // 1. 判断参数是否合法
+    if (argc < 2) {
+        printf("must supply a database filename.\n");
+        exit(EXIT_FAILURE);
+    }
+    // 2. 从命令行参数中获取数据库文件名称: argv[0] 是可执行文件的名称
+    char* filename = argv[1];
+    // 3. 初始化表结构
+    Table* table = db_open(filename);
+    // 4. 初始化输入缓冲区
     InputBuffer *input_buffer = new_input_buffer();
-    // 3. 持续循环读取控制台输入
+    // 5. 持续循环读取控制台输入
     while (true) {
-        // 3.1 控制台提示输入
+        // 5.1 控制台提示输入
         print_prompt();
-        // 3.2 读取控制台输入
+        // 5.2 读取控制台输入
         read_input(input_buffer);
-        // 3.3 判断是否为元命令 / 非 SQL 命令
+        // 5.3 判断是否为元命令 / 非 SQL 命令
         if (input_buffer->buffer[0] == '.') {
             switch (do_meta_command(input_buffer, table)) {
                 case META_COMMAND_SUCCESS:
@@ -307,7 +470,7 @@ int main() {
                     continue;
             }
         }
-        // 3.4 初始化 SQL 语句
+        // 5.4 初始化 SQL 语句
         Statement statement;
         switch (prepare_statement(input_buffer, &statement)) {
             case PREPARE_SUCCESS:
@@ -325,7 +488,7 @@ int main() {
                 printf("unrecognized keyword at start of '%s'.\n", input_buffer->buffer);
                 continue;
         }
-        // 2.5 执行 SQL 语句
+        // 5.5 执行 SQL 语句
         switch (execute_statement(&statement, table)) {
             case EXECUTE_SUCCESS:
                 printf("executed.\n");
