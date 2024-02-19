@@ -210,7 +210,7 @@ void flush_page(Pager* pager, uint32_t page_num, uint32_t size) {
 
 // 表结构
 typedef struct {
-    // 行号
+    // 行数
     uint32_t num_rows;
     // 内存调度器
     Pager* pager;
@@ -288,30 +288,58 @@ void db_close(Table* table) {
     free(table);
 }
 
+
+// 游标
+typedef struct {
+    // 表
+    Table* table;
+    // 行号
+    uint32_t row_num;
+    // 是否在表的结尾处
+    bool end_of_table;
+} Cursor;
+
+// 初始化游标在表的起始位置
+Cursor* table_start(Table* table) {
+    // 1. 给游标分配内存
+    Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
+    // 2. 初始化游标属性
+    cursor->table = table;
+    cursor->row_num = 0;
+    cursor->end_of_table = (table->num_rows == 0);
+    return cursor;
+}
+
+// 初始化游标在表的结束位置
+Cursor* table_end(Table* table) {
+    Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->row_num = table->num_rows;
+    cursor->end_of_table = true;
+    return cursor;
+}
+
 // 读取表中的行记录
-void* row_slot(Table *table, uint32_t row_num) {
+void* cursor_value(Cursor* cursor) {
     // 1. 计算行所在的页
-    uint32_t page_num = row_num / ROWS_PER_PAGE;
+    uint32_t page_num = cursor->row_num / ROWS_PER_PAGE;
     // 2. 获取对应的页内存
-    void* page = get_page(table->pager, page_num);
+    void* page = get_page(cursor->table->pager, page_num);
     // 3. 计算行在页中的偏移量
-    uint32_t row_offset = row_num % ROWS_PER_PAGE;
+    uint32_t row_offset = cursor->row_num % ROWS_PER_PAGE;
     // 4. 行在页中的偏移量换算成字节偏移量
     uint32_t byte_offset = row_offset * ROW_SIZE;
     // 5. 指针运算
     return page + byte_offset;
 }
 
-// 释放表内存
-void free_table(Table* table) {
-    // 如果页内存为空, 那么就需要释放
-    // TODO 如果某个页中还有数据, 那不会造成内存泄露吗？
-    for (uint32_t index = 0; table->pages[index]; index++) {
-        free(table->pages[index]);
+// 推进游标
+void cursor_advance(Cursor* cursor) {
+    cursor->row_num += 1;
+    if (cursor->row_num >= cursor->table->num_rows) {
+        cursor->end_of_table = true;
     }
-    free(table);
 }
-
 
 // 元命令类型
 typedef enum {
@@ -413,20 +441,28 @@ ExecuteResult execute_insert(Statement* statement, Table* table) {
     }
     // 2. 获取需要插入的行记录
     Row* row_to_insert = &(statement->row_to_insert);
-    // 3. 序列化行记录
-    serialize_row(row_to_insert, row_slot(table, table->num_rows));
-    // 4. 增加表的行记录数量
+    // 3. 游标设置到表末尾
+    Cursor* cursor = table_end(table);
+    // 4. 序列化行记录
+    serialize_row(row_to_insert, cursor_value(cursor));
+    // 5. 增加表的行记录数量
     table->num_rows += 1;
     return EXECUTE_SUCCESS;
 }
 
 // 执行 SQL 查询语句
 ExecuteResult execute_select(Statement* statement, Table* table) {
+    // 1. 游标设置到起始位置
+    Cursor* cursor = table_start(table);
+    // 2. 从游标的位置开始遍历
     Row row;
-    for (uint32_t index = 0; index < table->num_rows; index++) {
-        deserialize_row(row_slot(table, index), &row);
+    while (!cursor->end_of_table) {
+        deserialize_row(cursor_value(cursor), &row);
         print_row(&row);
+        cursor_advance(cursor);
     }
+    // 3. 释放游标的内存; 为什么查询需要释放内存, 插入不需要释放内存呢?
+    free(cursor);
     return EXECUTE_SUCCESS;
 }
 
