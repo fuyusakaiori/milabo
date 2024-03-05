@@ -8,6 +8,7 @@
 #include <errno.h>
 
 #define EXIT ".exit"
+#define CONSTANTS ".constants"
 #define INSERT "insert"
 #define SELECT "select"
 
@@ -18,18 +19,235 @@
 #define TABLE_MAX_PAGES 100
 
 
-// 输入缓冲区
-struct InputBuffer_t {
+
+/**
+ * 元命令类型
+ */
+typedef enum {
+    META_COMMAND_SUCCESS,
+    META_COMMAND_UNRECOGNIZED_COMMAND
+} MetaCommandResult;
+
+/**
+ * SQL 初始化结果类型
+ */
+typedef enum {
+    PREPARE_SUCCESS,
+    PREPARE_STRING_TOO_LONG,
+    PREPARE_SYNTAX_ERROR,
+    PREPARE_NEGATIVE_ID,
+    PREPARE_UNRECOGNIZED_STATEMENT
+} PrepareResult;
+
+/**
+ * SQL 语句类型
+ */
+typedef enum {
+    STATEMENT_INSERT,
+    STATEMENT_SELECT,
+} StatementType;
+
+/**
+ * SQL 执行结果类型
+ */
+typedef enum {
+    EXECUTE_SUCCESS,
+    EXECUTE_TABLE_FULL
+}ExecuteResult;
+
+/**
+ * 树节点类型
+ */
+typedef enum {
+    // 非叶子节点
+    TREE_NODE_INTERNAL,
+    // 叶子节点
+    TREE_NODE_LEAF,
+} TreeNodeType;
+
+/**
+ * 输入缓冲区
+ */
+typedef struct {
     // 字符串缓冲区
     char *buffer;
     // 缓冲区大小
     size_t buffer_length;
     // 读取字符串的长度
     ssize_t input_length;
-};
+} InputBuffer;
 
-// 定义输入缓冲区别名
-typedef struct InputBuffer_t InputBuffer;
+/**
+ * 硬编码行记录
+ */
+typedef struct {
+    // 主键
+    uint32_t id;
+    // 内容
+    char username[COLUMN_USERNAME_SIZE + 1];
+    char email[COLUMN_EMAIL_SIZE + 1];
+} Row;
+
+/**
+ * SQL 语句
+ */
+typedef struct {
+    StatementType type;
+    Row row_to_insert; // 仅用于插入语句
+} Statement;
+
+/**
+ * 内存调度器
+ */
+typedef struct {
+    // 文件描述符: 用于判断文件的状态
+    int file_descriptor;
+    // 文件大小
+    uint32_t file_length;
+    // 页数量
+    uint32_t num_pages;
+    // 管理的内存
+    void* pages[TABLE_MAX_PAGES];
+} Pager;
+
+/**
+ * 表结构
+ */
+typedef struct {
+    // 内存调度器
+    Pager* pager;
+    // 注: 不再记录行数而是记录根节点所在的页码
+    uint32_t root_page_num
+} Table;
+
+/**
+ * 游标
+ */
+typedef struct {
+    // 表
+    Table* table;
+    // 页号
+    uint32_t page_num;
+    // 关键字序号
+    uint32_t cell_num;
+    // 是否在表的结尾处
+    bool end_of_table;
+} Cursor;
+
+const uint32_t ID_SIZE = size_of_attribute(Row, id);
+const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
+const uint32_t EMAIL_SIZE = size_of_attribute(Row, email)
+const uint32_t ID_OFFSET = 0;
+const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
+const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
+const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
+
+// 每页大小 4KB
+const uint32_t PAGE_SIZE = 4096;
+// 每页的行数
+const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
+// 每张表的行数
+const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+
+/*
+ * 树节点头信息的内存布局
+ */
+// 树节点类型字段的大小：1B
+const uint32_t TREE_NODE_TYPE_SIZE = sizeof(uint8_t);
+// 树节点类型字段的偏移量
+const uint32_t TREE_NODE_TYPE_OFFSET = 0;
+// 树节点是否为根节点字段的大小: 1B
+const uint32_t IS_ROOT_SIZE = sizeof(uint8_t);
+// 树节点是否为根节点字段的偏移量
+const uint32_t IS_ROOT_OFFSET = TREE_NODE_TYPE_SIZE;
+// 树节点的父节点指针字段的大小
+const uint32_t PARENT_POINTER_SIZE = sizeof(uint32_t);
+// 树节点的父节点指针字段的偏移量
+const uint32_t PARENT_POINTER_OFFSET = IS_ROOT_OFFSET + IS_ROOT_SIZE;
+
+// 树节点通用头信息的大小：为什么原本用的是 uint8_t 类型？为什么计算 uint8_t 的大小还要使用 uint32_t 接收？
+const uint32_t COMMON_TREE_NODE_HEADER_SIZE = TREE_NODE_TYPE_SIZE + IS_ROOT_SIZE + PARENT_POINTER_SIZE;
+/*
+ * 树叶子节点头信息的内存布局
+ */
+// 树的叶子节点存储的关键字数量的字段的大小
+const uint32_t TREE_LEAF_NODE_NUM_CELLS_SIZE = sizeof(uint32_t);
+// 树的叶子节点存储的关键字数量的字段的偏移量
+const uint32_t TREE_LEAF_NODE_NUM_CELLS_OFFSET = COMMON_TREE_NODE_HEADER_SIZE;
+
+// 树的叶子节点的头信息大小
+const uint32_t COMMON_TREE_LEAF_NODE_HEADER_SIZE = COMMON_TREE_NODE_HEADER_SIZE + TREE_LEAF_NODE_NUM_CELLS_SIZE;
+/*
+ * 树叶子节点存储的内容的内存布局
+ */
+// 树的叶子节点中每个关键字的 key 字段的大小
+const uint32_t TREE_LEAF_NODE_KEY_SIZE = sizeof(uint32_t);
+// 树的叶子节点中每个关键字的 key 字段的偏移量
+const uint32_t TREE_LEAF_NODE_KEY_OFFSET = 0;
+// 树的叶子节点中每个关键字的 value 字段的大小: 存储的内容就是行记录
+const uint32_t TREE_LEAF_NODE_VALUE_SIZE = ROW_SIZE;
+// 树的叶子节点中每个关键字的 value 字段的偏移量
+const uint32_t TREE_LEAF_NODE_VALUE_OFFSET = TREE_LEAF_NODE_KEY_SIZE;
+// 树的叶子节点中每个关键字的大小
+const uint32_t TREE_LEAF_NODE_CELL_SIZE = TREE_LEAF_NODE_KEY_SIZE + TREE_LEAF_NODE_VALUE_SIZE;
+// 树的叶子节点实际存储数据的大小
+const uint32_t TREE_LEAF_NODE_SPACE_FOR_CELLS = PAGE_SIZE - COMMON_TREE_LEAF_NODE_HEADER_SIZE;
+
+// 树的叶子节点最多存储的关键字数量
+const uint32_t TREE_LEAF_NODE_MAX_CELLS = TREE_LEAF_NODE_SPACE_FOR_CELLS / TREE_LEAF_NODE_CELL_SIZE;
+
+// 初始化缓冲区
+InputBuffer *new_input_buffer();
+// 命令行提示输入
+void print_prompt();
+// 输出常量内容
+void print_constants();
+// 读取命令行输入内容
+void read_input(InputBuffer *input_buffer);
+// // 序列化每行内容
+void serialize_row(Row *source, void *destination);
+// 反序列化每行内容
+void deserialize_row(void *source, Row *destination);
+// 打印查询的内容
+void print_row(Row* row);
+// 获取叶子节点中的关键字数量
+uint32_t* leaf_node_num_cells(void* node);
+// 获取叶子节点中的关键字的 key
+uint32_t* leaf_node_key(void* node, uint32_t cell_num);
+// 初始化叶子节点的数量
+void initialize_leaf_node(void* node);
+// 插入叶子节点
+void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value);
+// 初始化内存调度器
+Pager* pager_open(const char* filename);
+// 调度磁盘数据到页内存中
+void* get_page(Pager* pager, uint32_t page_num);
+// 持久化页内存的数据到磁盘中
+void pager_flush(Pager* pager, uint32_t page_num);
+// 初始化表
+Table* db_open(const char* filename);
+// 初始化游标在表的起始位置
+Cursor* table_start(Table* table);
+// 初始化游标在表的结束位置
+Cursor* table_end(Table* table);
+// 读取表中的行记录
+void* cursor_value(Cursor* cursor);
+// 推进游标
+void cursor_advance(Cursor* cursor);
+// 判断元命令类型
+MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table* table);
+// 初始化插入 SQL 语句
+PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement);
+// 初始化 SQL 语句
+PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement);
+// 执行 SQL 插入语句
+ExecuteResult execute_insert(Statement* statement, Table* table);
+// 执行 SQL 查询语句
+ExecuteResult execute_select(Statement* statement, Table* table);
+// 执行 SQL 语句
+ExecuteResult execute_statement(Statement *statement, Table* table);
+
+
 
 // 定义构造函数
 InputBuffer *new_input_buffer() {
@@ -49,6 +267,7 @@ void print_prompt() {
     printf("neptune-db > ");
 }
 
+// 读取命令行输入内容
 void read_input(InputBuffer *input_buffer) {
     // 1. 读取控制台的输入: 缓冲区、缓冲区大小、数据源
     ssize_t input_len = getline(&(input_buffer->buffer), &(input_buffer->buffer_length), stdin);
@@ -60,37 +279,6 @@ void read_input(InputBuffer *input_buffer) {
     // 3. 过滤换行符
     input_buffer->input_length = input_len - 1;
     input_buffer->buffer[input_len - 1] = 0;
-}
-
-void close_input_buffer(InputBuffer *input_buffer) {
-    // 释放真正缓冲区占用的内存
-    free(input_buffer->buffer);
-    // 释放缓冲区封装类占用的内存
-    free(input_buffer);
-}
-
-
-
-// 硬编码行
-typedef struct {
-    // 主键
-    uint32_t id;
-    // 内容
-    char username[COLUMN_USERNAME_SIZE + 1];
-    char email[COLUMN_EMAIL_SIZE + 1];
-} Row;
-
-const uint32_t ID_SIZE = size_of_attribute(Row, id);
-const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
-const uint32_t EMAIL_SIZE = size_of_attribute(Row, email)
-const uint32_t ID_OFFSET = 0;
-const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
-const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
-const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
-
-// 打印查询的内容
-void print_row(Row* row) {
-    printf("(%d, %s, %s)\n", row->id, row->username, row->email);
 }
 
 // 序列化每行内容
@@ -108,22 +296,66 @@ void deserialize_row(void *source, Row *destination) {
     memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
 }
 
-// 每页大小 4KB
-const uint32_t PAGE_SIZE = 4096;
-// 每页的行数
-const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
-// 每张表的行数
-const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+// 打印查询的内容
+void print_row(Row* row) {
+    printf("(%d, %s, %s)\n", row->id, row->username, row->email);
+}
 
-// 内存调度器
-typedef struct {
-    // 文件描述符: 用于判断文件的状态
-    int file_descriptor;
-    // 文件大小
-    uint32_t file_length;
-    // 管理的内存
-    void* pages[TABLE_MAX_PAGES];
-} Pager;
+
+// 获取叶子节点中的关键字数量
+uint32_t* leaf_node_num_cells(void* node) {
+    // 基址 + 关键字数量字段的偏移量
+    return node + TREE_LEAF_NODE_NUM_CELLS_OFFSET;
+}
+
+// 获取叶子节点中的关键字
+void* leaf_node_cell(void* node, uint32_t cell_num) {
+    // 基址 + 叶子节点头信息大小 + 第 i 关键字 * 关键字大小
+    return node + COMMON_TREE_LEAF_NODE_HEADER_SIZE + cell_num * TREE_LEAF_NODE_CELL_SIZE;
+}
+
+// 获取叶子节点中的关键字的 key
+uint32_t* leaf_node_key(void* node, uint32_t cell_num) {
+    // 关键字的起始位置就是 key 的位置
+    return leaf_node_cell(node, cell_num);
+}
+
+// 获取叶子节点中的关键字 value
+void* leaf_node_value(void* node, uint32_t cell_num) {
+    return leaf_node_cell(node, cell_num) + TREE_LEAF_NODE_KEY_SIZE;
+}
+
+// 初始化叶子节点的数量
+void initialize_leaf_node(void* node) {
+    *leaf_node_num_cells(node) = 0;
+}
+
+// 插入叶子节点
+void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value) {
+    // 1. 获取叶子节点
+    void* node = get_page(cursor->table->pager, cursor->page_num);
+    // 2. 获取关键字数量
+    uint32_t cell_nums = *leaf_node_num_cells(node);
+    // 3. 判断节点的关键字数量是否超过限制, 需要分裂
+    if (cell_nums >= TREE_LEAF_NODE_MAX_CELLS) {
+        printf("need to implement splitting a leaf node. \n");
+        exit(EXIT_FAILURE);
+    }
+    // 4. 判断应该在哪里插入关键字
+    if (cursor->cell_num < cell_nums) {
+        // TODO 作用是什么？并不是让关键字保持有序的
+        for (uint32_t index = cell_nums; index > cursor->cell_num; index--) {
+            memcpy(leaf_node_cell(node, index),
+                   leaf_node_cell(node, index - 1), TREE_LEAF_NODE_CELL_SIZE);
+        }
+    }
+    // 5. 增加关键字数量
+    *(leaf_node_num_cells(node)) += 1;
+    // 6. 保存关键字的 key
+    *(leaf_node_key(node, cursor->cell_num)) = key;
+    // 7. 保存关键字的 value: void* 类型无法赋值, 只能拷贝
+    serialize_row(value, leaf_node_value(node, cursor->cell_num));
+}
 
 // 初始化内存调度器
 Pager* pager_open(const char* filename) {
@@ -142,6 +374,13 @@ Pager* pager_open(const char* filename) {
     pager->file_descriptor = fd;
     // 6. 赋值文件长度
     pager->file_length = file_length;
+    // 7. 初始化页的数量
+    pager->num_pages = (file_length / PAGE_SIZE);
+    // 8. 判断持久化页数据时是否存在异常: 正常来说每次写入的都是一页数据, 不可能除不尽
+    if (file_length % PAGE_SIZE != 0) {
+        printf("db file is not a whole number of pages. corrupt file. \n");
+        exit(EXIT_FAILURE);
+    }
     // 7. 初始化页内存为空
     for (uint32_t index = 0; index < TABLE_MAX_PAGES; index++) {
         pager->pages[index] = NULL;
@@ -181,12 +420,16 @@ void* get_page(Pager* pager, uint32_t page_num) {
             }
         }
         pager->pages[page_num] = page;
+        // 3. 更新页的数量: 如果调用的页号大于保存的页的数量, 那就需要更新页的数量
+        if (page_num >= pager->num_pages) {
+            pager->num_pages = page_num + 1;
+        }
     }
     return pager->pages[page_num];
 }
 
 // 持久化页内存的数据到磁盘中
-void flush_page(Pager* pager, uint32_t page_num, uint32_t size) {
+void pager_flush(Pager* pager, uint32_t page_num) {
     // 1. 判断页内存指针是否为空
     if (pager->pages[page_num] == NULL) {
         printf("tried to flush null page\n");
@@ -199,8 +442,8 @@ void flush_page(Pager* pager, uint32_t page_num, uint32_t size) {
         printf("error seeking: %d\n", errno);
         exit(EXIT_FAILURE);
     }
-    // 4. 持久化内存
-    ssize_t bytes_written = write(pager->file_descriptor, pager->pages[page_num], size);
+    // 4. 持久化内存: 每次固定写入一页数据
+    ssize_t bytes_written = write(pager->file_descriptor, pager->pages[page_num], PAGE_SIZE);
     // 5. 判断是否写入成功
     if (bytes_written == -1) {
         printf("error writing: %d\n", errno);
@@ -208,96 +451,66 @@ void flush_page(Pager* pager, uint32_t page_num, uint32_t size) {
     }
 }
 
-// 表结构
-typedef struct {
-    // 行数
-    uint32_t num_rows;
-    // 内存调度器
-    Pager* pager;
-
-    void *pages[TABLE_MAX_PAGES];
-} Table;
-
 // 初始化表
-Table* db_open(const char* filename){
+Table* db_open(const char* filename) {
     // 1. 初始化内存调度器
     Pager* pager = pager_open(filename);
-    // 2. 初始化行号
-    uint32_t num_rows = pager->file_length / ROW_SIZE;
-    // 3. 分配表内存
+    // 2. 分配表内存
     Table* table = (Table*)malloc(sizeof(Table));
-    // 4. 赋值行号
-    table->num_rows = num_rows;
+    // 3. 初始化页号
+    table->root_page_num = 0;
+    // 4. 判断页数量是否为空
+    if (pager->num_pages == 0) {
+        // 初始化第 0 页的内存
+        initialize_leaf_node(get_page(pager, 0));
+    }
     // 5. 赋值内存调度器
     table->pager = pager;
     return table;
 }
-
+// 关闭表
 void db_close(Table* table) {
     // 1. 获取调度器和总页数
     Pager* pager = table->pager;
-    uint32_t num_pages = table->num_rows / ROWS_PER_PAGE;
     // 2. 遍历所有页内存
-    for (uint32_t index = 0; index < num_pages; index++) {
+    for (uint32_t index = 0; index < pager->num_pages; index++) {
         // 2.1 如果页内存为空, 那么就跳过
         if (pager->pages[index] == NULL) {
             continue;
         }
         // 2.2 持久化页内存
-        flush_page(pager, index, PAGE_SIZE);
+        /**
+         * 原逻辑: 如果没有写满一页的话, 就需要知道需要写入多少条数据, 所以后面还会单独做模运算知道剩余多少条数据
+         * 现逻辑: 不管是否写满一页, 都直接写入一页大小的数据
+         */
+        pager_flush(pager, index);
         // 2.3 释放页内存空间
         free(pager->pages[index]);
         // 2.4 指针指向空
         pager->pages[index] = NULL;
         // 注: 先释放内存再将指针指向空, 先指针指向空会造成内存泄露
     }
-    // 3. 计算是否存在跨页写入
-    uint32_t num_additional_rows = table->num_rows % ROWS_PER_PAGE;
-    if (num_additional_rows > 0) {
-        // 3.1 跨页写入的页号就是总的页数
-        uint32_t page_num = num_pages;
-        // 3.2 判断需要跨页写入的数据是否还在内存中
-        if (pager->pages[page_num] != NULL) {
-            // 3.3 持久化需要跨页写入的数据
-            flush_page(pager, page_num, num_additional_rows * ROW_SIZE);
-            // 3.4 释放页内存
-            free(pager->pages[page_num]);
-            // 3.5 指针指向空
-            pager->pages[page_num] = NULL;
-        }
-    }
-    // 4. 关闭文件
+    // 3. 关闭文件
     int result = close(pager->file_descriptor);
-    // 5. 判断文件是否关闭成功
+    // 4. 判断文件是否关闭成功
     if (result == -1) {
         printf("closing db file error.\n");
         exit(EXIT_FAILURE);
     }
-    // 6. 判断是否还有没有释放的内存: 为什么还要判断呢？
+    // 5. 判断是否还有没有释放的内存: 为什么还要判断呢？
     for (uint32_t index = 0; index < TABLE_MAX_PAGES; index++) {
-        // 6.1 获取页内存
+        // 5.1 获取页内存
         void* page = pager->pages[index];
-        // 6.2 判断是否已经释放过内存
+        // 5.2 判断是否已经释放过内存
         if (page) {
             free(page);
             pager->pages[index] = NULL;
         }
     }
-    // 7. 释放内存调度器和表
+    // 6. 释放内存调度器和表
     free(pager);
     free(table);
 }
-
-
-// 游标
-typedef struct {
-    // 表
-    Table* table;
-    // 行号
-    uint32_t row_num;
-    // 是否在表的结尾处
-    bool end_of_table;
-} Cursor;
 
 // 初始化游标在表的起始位置
 Cursor* table_start(Table* table) {
@@ -305,8 +518,14 @@ Cursor* table_start(Table* table) {
     Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
     // 2. 初始化游标属性
     cursor->table = table;
-    cursor->row_num = 0;
-    cursor->end_of_table = (table->num_rows == 0);
+    cursor->page_num = table->root_page_num;
+    cursor->cell_num = 0;
+    // 3. 获取根节点
+    void* node = get_page(table->pager, table->root_page_num);
+    // 4. 获取根节点关键字的数量
+    uint32_t num_cells = *leaf_node_num_cells(node);
+    // 5. 判断是否在表的末尾: 通过关键字的数量来判断, 如果没有任何关键字, 那么肯定是在末尾
+    cursor->end_of_table = (num_cells == 0);
     return cursor;
 }
 
@@ -314,65 +533,37 @@ Cursor* table_start(Table* table) {
 Cursor* table_end(Table* table) {
     Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
     cursor->table = table;
-    cursor->row_num = table->num_rows;
+    // 注: 为什么游标移动到末尾的时候, 页号还是根节点呢？
+    cursor->page_num = table->root_page_num;
+    cursor->cell_num = *leaf_node_num_cells(
+            get_page(table->pager, table->root_page_num));
     cursor->end_of_table = true;
     return cursor;
 }
 
 // 读取表中的行记录
 void* cursor_value(Cursor* cursor) {
-    // 1. 计算行所在的页
-    uint32_t page_num = cursor->row_num / ROWS_PER_PAGE;
+    // 1. 获取页号
+    uint32_t page_num = cursor->page_num;
     // 2. 获取对应的页内存
     void* page = get_page(cursor->table->pager, page_num);
-    // 3. 计算行在页中的偏移量
-    uint32_t row_offset = cursor->row_num % ROWS_PER_PAGE;
-    // 4. 行在页中的偏移量换算成字节偏移量
-    uint32_t byte_offset = row_offset * ROW_SIZE;
-    // 5. 指针运算
-    return page + byte_offset;
+    // 3. 获取关键字的内容
+    return leaf_node_value(page, cursor->cell_num);
 }
 
 // 推进游标
 void cursor_advance(Cursor* cursor) {
-    cursor->row_num += 1;
-    if (cursor->row_num >= cursor->table->num_rows) {
+    // 1. 获取页号
+    uint32_t page_num = cursor->page_num;
+    // 2. 获取页的内容
+    void* node = get_page(cursor->table->pager, page_num);
+    // 3. 增加关键字的数量
+    cursor->cell_num++;
+    // 4. 判断游标是否在末尾
+    if (cursor->cell_num >= (*leaf_node_num_cells(node))) {
         cursor->end_of_table = true;
     }
 }
-
-// 元命令类型
-typedef enum {
-    META_COMMAND_SUCCESS,
-    META_COMMAND_UNRECOGNIZED_COMMAND
-} MetaCommandResult;
-
-// 初始化 SQL 结果
-typedef enum {
-    PREPARE_SUCCESS,
-    PREPARE_STRING_TOO_LONG,
-    PREPARE_SYNTAX_ERROR,
-    PREPARE_NEGATIVE_ID,
-    PREPARE_UNRECOGNIZED_STATEMENT
-} PrepareResult;
-
-// SQL 语句类型
-typedef enum {
-    STATEMENT_INSERT,
-    STATEMENT_SELECT,
-} StatementType;
-
-// SQL 语句
-typedef struct {
-    StatementType type;
-    Row row_to_insert; // 仅用于插入语句
-} Statement;
-
-// SQL 执行结果
-typedef enum {
-    EXECUTE_SUCCESS,
-    EXECUTE_TABLE_FULL
-}ExecuteResult;
 
 // 判断元命令类型
 MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table* table) {
@@ -381,8 +572,22 @@ MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table* table) {
         db_close(table);
         exit(EXIT_SUCCESS);
         // return META_COMMAND_SUCCESS;
+    } else if (strcmp(input_buffer->buffer, CONSTANTS) == 0) {
+        printf("constants: \n");
+        print_constants();
+        return META_COMMAND_SUCCESS;
     }
     return META_COMMAND_UNRECOGNIZED_COMMAND;
+}
+
+// 输出常量内容
+void print_constants() {
+    printf("ROW_SIZE: %d\n", ROW_SIZE);
+    printf("COMMON_TREE_NODE_HEADER_SIZE: %d\n", COMMON_TREE_NODE_HEADER_SIZE);
+    printf("COMMON_TREE_LEAF_NODE_HEADER_SIZE: %d\n", COMMON_TREE_LEAF_NODE_HEADER_SIZE);
+    printf("TREE_LEAF_NODE_CELL_SIZE: %d\n", TREE_LEAF_NODE_CELL_SIZE);
+    printf("TREE_LEAF_NODE_SPACE_FOR_CELLS: %d\n", TREE_LEAF_NODE_SPACE_FOR_CELLS);
+    printf("TREE_LEAF_NODE_MAX_CELLS: %d\n", TREE_LEAF_NODE_MAX_CELLS);
 }
 
 // 初始化插入 SQL 语句
@@ -435,18 +640,18 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
 
 // 执行 SQL 插入语句
 ExecuteResult execute_insert(Statement* statement, Table* table) {
-    // 1. 判断表的行号是否超过限制
-    if (table->num_rows >= TABLE_MAX_ROWS) {
+    // 1. 获取页号
+    void* node = get_page(table->pager, table->root_page_num);
+    // 2. 判断关键字数量是否超过限制
+    if ((*leaf_node_num_cells(node)) > TREE_LEAF_NODE_MAX_CELLS) {
         return EXECUTE_TABLE_FULL;
     }
     // 2. 获取需要插入的行记录
     Row* row_to_insert = &(statement->row_to_insert);
-    // 3. 游标设置到表末尾
+    // 3. 游标设置到表末尾: 移动到末尾的原因是需要将数据向后移动, 会更方便些
     Cursor* cursor = table_end(table);
-    // 4. 序列化行记录
-    serialize_row(row_to_insert, cursor_value(cursor));
-    // 5. 增加表的行记录数量
-    table->num_rows += 1;
+    // 4. 插入关键字
+    leaf_node_insert(cursor, row_to_insert->id, row_to_insert);
     return EXECUTE_SUCCESS;
 }
 
