@@ -52,6 +52,7 @@ typedef enum {
  */
 typedef enum {
     EXECUTE_SUCCESS,
+    EXECUTE_DUPLICATE_KEY,
     EXECUTE_TABLE_FULL
 }ExecuteResult;
 
@@ -117,7 +118,7 @@ typedef struct {
     // 内存调度器
     Pager* pager;
     // 注: 不再记录行数而是记录根节点所在的页码
-    uint32_t root_page_num
+    uint32_t root_page_num;
 } Table;
 
 /**
@@ -218,6 +219,12 @@ uint32_t* leaf_node_key(void* node, uint32_t cell_num);
 void initialize_leaf_node(void* node);
 // 插入叶子节点
 void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value);
+// 查询叶子节点
+Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key);
+// 获取节点类型
+TreeNodeType get_node_type(void* node);
+// 设置节点类型
+void set_node_type(void* node, TreeNodeType type);
 // 初始化内存调度器
 Pager* pager_open(const char* filename);
 // 调度磁盘数据到页内存中
@@ -228,8 +235,8 @@ void pager_flush(Pager* pager, uint32_t page_num);
 Table* db_open(const char* filename);
 // 初始化游标在表的起始位置
 Cursor* table_start(Table* table);
-// 初始化游标在表的结束位置
-Cursor* table_end(Table* table);
+// 移动游标的位置
+Cursor* table_find(Table* table, uint32_t key);
 // 读取表中的行记录
 void* cursor_value(Cursor* cursor);
 // 推进游标
@@ -327,7 +334,10 @@ void* leaf_node_value(void* node, uint32_t cell_num) {
 
 // 初始化叶子节点的数量
 void initialize_leaf_node(void* node) {
+    // 初始化节点关键字数量
     *leaf_node_num_cells(node) = 0;
+    // 设置节点类型
+    set_node_type(node, TREE_NODE_LEAF);
 }
 
 // 插入叶子节点
@@ -343,7 +353,7 @@ void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value) {
     }
     // 4. 判断应该在哪里插入关键字
     if (cursor->cell_num < cell_nums) {
-        // TODO 作用是什么？并不是让关键字保持有序的
+        // 注: 将需要插入的位置之后的数据全部向后移动, 空出来这个位置后再插入
         for (uint32_t index = cell_nums; index > cursor->cell_num; index--) {
             memcpy(leaf_node_cell(node, index),
                    leaf_node_cell(node, index - 1), TREE_LEAF_NODE_CELL_SIZE);
@@ -355,6 +365,53 @@ void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value) {
     *(leaf_node_key(node, cursor->cell_num)) = key;
     // 7. 保存关键字的 value: void* 类型无法赋值, 只能拷贝
     serialize_row(value, leaf_node_value(node, cursor->cell_num));
+}
+
+// 查询叶子节点
+Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key) {
+    // 1. 获取节点
+    void* node = get_page(table->pager, page_num);
+    // 2. 获取关键字的数量
+    uint32_t num_cells = *leaf_node_num_cells(node);
+    // 3. 移动游标
+    Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->page_num = page_num;
+    // 4. 二分搜索
+    uint32_t left_index = 0;
+    // 注: 如果这里使用非负整数, 那么索引不能使用 len - 1, 只能使用 len, 使用 len 的问题在于会多循环几次
+    uint32_t right_index = num_cells;
+    while (left_index < right_index) {
+        // 5. 计算中间的索引
+        uint32_t mid_index = left_index + ((right_index - left_index) >> 1);
+        // 6. 获取中间的关键字的 key
+        uint32_t key_target = *leaf_node_key(node, mid_index);
+        // 7. 判断是否查找到了
+        if (key_target == key) {
+            cursor->cell_num = key_target;
+            return cursor;
+        }
+        // 8. 如果没有查找到
+        if (key < key_target) {
+            right_index = mid_index;
+        } else {
+            left_index = mid_index + 1;
+        }
+    }
+    cursor->cell_num = left_index;
+    return cursor;
+}
+
+// 获取节点类型
+TreeNodeType get_node_type(void* node) {
+    uint8_t value = *((uint8_t*) node + TREE_NODE_TYPE_OFFSET);
+    return (TreeNodeType) value;
+}
+
+// 设置节点类型
+void set_node_type(void* node, TreeNodeType type) {
+    uint8_t value = type;
+    *((uint8_t*) node + TREE_NODE_TYPE_OFFSET) = value;
 }
 
 // 初始化内存调度器
@@ -529,16 +586,19 @@ Cursor* table_start(Table* table) {
     return cursor;
 }
 
-// 初始化游标在表的结束位置
-Cursor* table_end(Table* table) {
-    Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
-    cursor->table = table;
-    // 注: 为什么游标移动到末尾的时候, 页号还是根节点呢？
-    cursor->page_num = table->root_page_num;
-    cursor->cell_num = *leaf_node_num_cells(
-            get_page(table->pager, table->root_page_num));
-    cursor->end_of_table = true;
-    return cursor;
+// 移动游标的位置
+Cursor* table_find(Table* table, uint32_t key) {
+    // 1. 获取根节点的页号
+    uint32_t root_page_num = table->root_page_num;
+    // 2. 获取根节点
+    void* root_node = get_page(table->pager, root_page_num);
+    // 3. 搜索
+    if (get_node_type(root_node) == TREE_NODE_LEAF) {
+        return leaf_node_find(table, root_page_num, key);
+    } else {
+        printf("need to implement searching an internal node\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 // 读取表中的行记录
@@ -642,15 +702,28 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
 ExecuteResult execute_insert(Statement* statement, Table* table) {
     // 1. 获取页号
     void* node = get_page(table->pager, table->root_page_num);
-    // 2. 判断关键字数量是否超过限制
-    if ((*leaf_node_num_cells(node)) > TREE_LEAF_NODE_MAX_CELLS) {
+    // 2. 获取关键字数量
+    uint32_t num_cells = (*(leaf_node_num_cells(node)));
+    // 3. 判断关键字数量是否超过限制
+    if (num_cells > TREE_LEAF_NODE_MAX_CELLS) {
         return EXECUTE_TABLE_FULL;
     }
-    // 2. 获取需要插入的行记录
+    // 4. 获取需要插入的行记录
     Row* row_to_insert = &(statement->row_to_insert);
-    // 3. 游标设置到表末尾: 移动到末尾的原因是需要将数据向后移动, 会更方便些
-    Cursor* cursor = table_end(table);
-    // 4. 插入关键字
+    // 5. 获取 id
+    uint32_t key_to_insert = row_to_insert->id;
+    // 6. 游标移动需要插入的位置
+    Cursor *cursor = table_find(table, key_to_insert);
+    // 7. 判断游标的位置是否是在末尾
+    if (cursor->cell_num < num_cells) {
+        // 8. 获取关键字的 key
+        uint32_t key_at_index = *leaf_node_key(node, cursor->cell_num);
+        // 9. 如果游标的位置不在末尾, 那么就需要判断 id 是否重复
+        if (key_at_index == key_to_insert) {
+            return EXECUTE_DUPLICATE_KEY;
+        }
+    }
+    // 10. 如果游标就在末尾, 那么直接插入就行, 肯定是新的
     leaf_node_insert(cursor, row_to_insert->id, row_to_insert);
     return EXECUTE_SUCCESS;
 }
@@ -733,6 +806,9 @@ int main(int argc, char* argv[]) {
         switch (execute_statement(&statement, table)) {
             case EXECUTE_SUCCESS:
                 printf("executed.\n");
+                break;
+            case (EXECUTE_DUPLICATE_KEY):
+                printf("error: duplicate key. \n");
                 break;
             case EXECUTE_TABLE_FULL:
                 printf("error: table full. \n");
