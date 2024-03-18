@@ -8,6 +8,7 @@
 #include <errno.h>
 
 #define EXIT ".exit"
+#define BTREE ".btree"
 #define CONSTANTS ".constants"
 #define INSERT "insert"
 #define SELECT "select"
@@ -240,6 +241,10 @@ InputBuffer *new_input_buffer();
 void print_prompt();
 // 输出常量内容
 void print_constants();
+// 可视化树结构
+void print_tree(Pager* pager, uint32_t page_num, uint32_t level);
+// 格式化
+void indent(uint32_t level);
 // 读取命令行输入内容
 void read_input(InputBuffer *input_buffer);
 // // 序列化每行内容
@@ -276,6 +281,8 @@ void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value);
 void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value);
 // 查询叶子节点
 Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key);
+// 查询内部节点
+Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key);
 // 获取节点类型
 TreeNodeType get_node_type(void* node);
 // 设置节点类型
@@ -522,9 +529,9 @@ void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value) {
     // 4. 初始化新生成的节点
     initialize_leaf_node(new_node);
     // 5. 将旧节点中一半的关键字都移动到新节点中
-    for (uint32_t index = TREE_LEAF_NODE_MAX_CELLS; index >= 0; index--) {
+    for (int32_t index = TREE_LEAF_NODE_MAX_CELLS; index >= 0; index--) {
         // 5.1 根据分裂的阈值判断目的节点是谁
-        void* destination_node = index > TREE_LEAF_NODE_LEFT_SPLIT_COUNT ? new_node: old_node;
+        void* destination_node = index >= TREE_LEAF_NODE_LEFT_SPLIT_COUNT ? new_node: old_node;
         // 5.2 重新定位关键字在目的节点中的位置
         uint32_t index_within_node = index % TREE_LEAF_NODE_LEFT_SPLIT_COUNT;
         // 5.3 获取关键字应该在的地址
@@ -543,7 +550,7 @@ void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value) {
     // 6. 更新每个节点的关键字数量
     *(leaf_node_num_cells(old_node)) = TREE_LEAF_NODE_LEFT_SPLIT_COUNT;
     *(leaf_node_num_cells(new_node)) = TREE_LEAF_NODE_RIGHT_SPLIT_COUNT;
-    // 7. 生成父节点
+    // 7. 生成父节点并记录分裂的两个节点
     if (is_node_root(old_node)) {
         return create_new_root(cursor->table, new_page_num);
     } else {
@@ -570,14 +577,14 @@ Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key) {
         // 5. 计算中间的索引
         uint32_t mid_index = left_index + ((right_index - left_index) >> 1);
         // 6. 获取中间的关键字的 key
-        uint32_t key_target = *leaf_node_key(node, mid_index);
+        uint32_t mid_value = *leaf_node_key(node, mid_index);
         // 7. 判断是否查找到了
-        if (key_target == key) {
-            cursor->cell_num = key_target;
+        if (mid_value == key) {
+            cursor->cell_num = mid_index;
             return cursor;
         }
         // 8. 如果没有查找到
-        if (key < key_target) {
+        if (key < mid_value) {
             right_index = mid_index;
         } else {
             left_index = mid_index + 1;
@@ -585,6 +592,41 @@ Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key) {
     }
     cursor->cell_num = left_index;
     return cursor;
+}
+
+// 查询内部节点
+Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key) {
+    // 1. 查询节点
+    void* node = get_page(table->pager, page_num);
+    // 2. 获取关键字的数量
+    uint32_t num_keys = *internal_node_num_keys(node);
+    // 3. 初始化二分查找左右指针
+    uint32_t left_index = 0;
+    uint32_t right_index = num_keys;
+    // 4. 二分查找
+    while (left_index < right_index) {
+        // 4.1 计算中间节点
+        uint32_t mid_index = left_index + ((right_index - left_index) >> 1);
+        // 4.2 获取中间节点的 key
+        uint32_t mid_key = *internal_node_key(node, mid_index);
+        // 4.3 判断是否找到最右侧的 key
+        if (mid_key >= key) {
+            right_index = mid_index;
+        } else {
+            left_index = mid_index + 1;
+        }
+    }
+    // 5.
+    uint32_t child_num = *internal_node_child(node, left_index);
+    // 6.
+    void* child = get_page(table->pager, child_num);
+    // 7. 判断子节点类型
+    switch (get_node_type(child)) {
+        case TREE_NODE_LEAF:
+            return leaf_node_find(table, child_num, key);
+        case TREE_NODE_INTERNAL:
+            return internal_node_find(table, child_num, key);
+    }
 }
 
 // 获取节点类型
@@ -816,6 +858,7 @@ Cursor* table_find(Table* table, uint32_t key) {
     if (get_node_type(root_node) == TREE_NODE_LEAF) {
         return leaf_node_find(table, root_page_num, key);
     } else {
+        // return internal_node_find(table, root_page_num, key);
         printf("need to implement searching an internal node\n");
         exit(EXIT_FAILURE);
     }
@@ -852,7 +895,11 @@ MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table* table) {
         db_close(table);
         exit(EXIT_SUCCESS);
         // return META_COMMAND_SUCCESS;
-    } else if (strcmp(input_buffer->buffer, CONSTANTS) == 0) {
+    } else if (strcmp(input_buffer->buffer, BTREE) == 0) {
+        printf("btree:\n");
+        print_tree(table->pager, 0, 0);
+        return META_COMMAND_SUCCESS;
+    }else if (strcmp(input_buffer->buffer, CONSTANTS) == 0) {
         printf("constants: \n");
         print_constants();
         return META_COMMAND_SUCCESS;
@@ -868,6 +915,51 @@ void print_constants() {
     printf("TREE_LEAF_NODE_CELL_SIZE: %d\n", TREE_LEAF_NODE_CELL_SIZE);
     printf("TREE_LEAF_NODE_SPACE_FOR_CELLS: %d\n", TREE_LEAF_NODE_SPACE_FOR_CELLS);
     printf("TREE_LEAF_NODE_MAX_CELLS: %d\n", TREE_LEAF_NODE_MAX_CELLS);
+}
+
+// 可视化树结构
+void print_tree(Pager* pager, uint32_t page_num, uint32_t level) {
+    // 1. 获取节点
+    void* node = get_page(pager, page_num);
+    // 2. 判断节点类型
+    uint32_t num_cells, child;
+    switch (get_node_type(node)) {
+        // 2.1 处理叶子节点
+        case TREE_NODE_LEAF:
+            // 2.1.1 获取叶子节点关键字数量
+            num_cells = *leaf_node_num_cells(node);
+            // 2.1.2 输出节点的关键字数量
+            indent(level);
+            printf(" - leaf (size %d)\n", num_cells);
+            // 2.1.3 循环输出关键字的 key
+            for (uint32_t index = 0; index < num_cells; index++) {
+                indent(level + 1);
+                printf("  - %d\n", *leaf_node_key(node, index));
+            }
+            break;
+        case TREE_NODE_INTERNAL:
+            // 2.2.1 获取内部节点关键字的数量
+            num_cells = *internal_node_num_keys(node);
+            // 2.1.2 输出节点的关键字数量
+            printf(" - internal (size %d)\n", num_cells);
+            // 2.1.3 循环输出关键字的 key
+            for (uint32_t index = 0; index < num_cells; index++) {
+                uint32_t child_num = *internal_node_child(node, index);
+                print_tree(pager, child_num, level + 1);
+                indent(level + 1);
+                printf("  - key %d\n", *internal_node_key(node, index));
+            }
+            child = *internal_node_right_child(node);
+            print_tree(pager, child, level + 1);
+            break;
+    }
+}
+
+// 格式化
+void indent(uint32_t level) {
+    for (uint32_t index = 0; index < level; index++) {
+        printf("  ");
+    }
 }
 
 // 初始化插入 SQL 语句
