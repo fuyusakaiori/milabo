@@ -616,11 +616,11 @@ Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key) {
             left_index = mid_index + 1;
         }
     }
-    // 5.
+    // 5. 获取内部节点对应的子节点
     uint32_t child_num = *internal_node_child(node, left_index);
-    // 6.
+    // 6. 获取子节点对应的地址
     void* child = get_page(table->pager, child_num);
-    // 7. 判断子节点类型
+    // 7. 判断子节点类型: 如果是内部节点, 那么就递归执行; 如果是叶子节点就会进入此前的二分查找逻辑
     switch (get_node_type(child)) {
         case TREE_NODE_LEAF:
             return leaf_node_find(table, child_num, key);
@@ -858,9 +858,7 @@ Cursor* table_find(Table* table, uint32_t key) {
     if (get_node_type(root_node) == TREE_NODE_LEAF) {
         return leaf_node_find(table, root_page_num, key);
     } else {
-        // return internal_node_find(table, root_page_num, key);
-        printf("need to implement searching an internal node\n");
-        exit(EXIT_FAILURE);
+        return internal_node_find(table, root_page_num, key);
     }
 }
 
