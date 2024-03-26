@@ -177,9 +177,14 @@ const uint32_t COMMON_TREE_NODE_HEADER_SIZE = TREE_NODE_TYPE_SIZE + IS_ROOT_SIZE
 const uint32_t TREE_LEAF_NODE_NUM_CELLS_SIZE = sizeof(uint32_t);
 // 树的叶子节点存储的关键字数量的字段的偏移量
 const uint32_t TREE_LEAF_NODE_NUM_CELLS_OFFSET = COMMON_TREE_NODE_HEADER_SIZE;
+// 树的叶子节点相邻的下一个叶子节点字段的大小（单向链表）
+const uint32_t TREE_LEAF_NODE_NEXT_LEAF_SIZE = sizeof(uint32_t);
+// 树的叶子节点相邻的下一个叶子节点的字段的偏移量
+const uint32_t TREE_LEAF_NODE_NEXT_LEAF_OFFSET = TREE_LEAF_NODE_NUM_CELLS_OFFSET + TREE_LEAF_NODE_NUM_CELLS_SIZE;
 
 // 树的叶子节点的头信息大小
-const uint32_t COMMON_TREE_LEAF_NODE_HEADER_SIZE = COMMON_TREE_NODE_HEADER_SIZE + TREE_LEAF_NODE_NUM_CELLS_SIZE;
+const uint32_t COMMON_TREE_LEAF_NODE_HEADER_SIZE =
+        COMMON_TREE_NODE_HEADER_SIZE + TREE_LEAF_NODE_NUM_CELLS_SIZE + TREE_LEAF_NODE_NEXT_LEAF_SIZE;
 
 /*
  * 树叶子节点存储的内容的内存布局
@@ -253,12 +258,24 @@ void serialize_row(Row *source, void *destination);
 void deserialize_row(void *source, Row *destination);
 // 打印查询的内容
 void print_row(Row* row);
+// 初始化叶子节点
+void initialize_leaf_node(void* node);
 // 获取叶子节点中的关键字数量
 uint32_t* leaf_node_num_cells(void* node);
 // 获取叶子节点中的关键字的 key
 uint32_t* leaf_node_key(void* node, uint32_t cell_num);
-// 初始化叶子节点
-void initialize_leaf_node(void* node);
+// 获取叶子节点中的关键字的 value
+void* leaf_node_value(void* node, uint32_t cell_num);
+// 查询叶子节点
+Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key);
+// 查询叶子节点的下一个相邻叶子节点
+uint32_t* leaf_node_next_leaf(void* node);
+// 插入叶子节点
+void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value);
+// 分裂并插入叶子节点
+void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value);
+// 初始化内部节点
+void initialize_internal_node(void* node);
 // 获取内部节点的关键字数量
 uint32_t* internal_node_num_keys(void* node);
 // 获取内部节点最后一个关键字
@@ -271,18 +288,10 @@ uint32_t* internal_node_cell(void* node, uint32_t cell_num);
 uint32_t* internal_node_key(void* node, uint32_t key_num);
 // 获取内部节点的关键字的 value - 子节点的指针
 uint32_t* internal_node_child(void* node, uint32_t child_num);
-// 初始化内部节点
-void initialize_internal_node(void* node);
-// 创建新的节点, 也就是父节点
-void create_new_root(Table* table, uint32_t right_child_page_num);
-// 插入叶子节点
-void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value);
-// 分裂并插入叶子节点
-void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value);
-// 查询叶子节点
-Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key);
 // 查询内部节点
 Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key);
+// 创建新的节点, 也就是父节点
+void create_new_root(Table* table, uint32_t right_child_page_num);
 // 获取节点类型
 TreeNodeType get_node_type(void* node);
 // 设置节点类型
@@ -378,6 +387,24 @@ void print_row(Row* row) {
     printf("(%d, %s, %s)\n", row->id, row->username, row->email);
 }
 
+/*
+ * 指针在和偏移量或者长度运算时其实是十六进制数和十进制数相加
+ * 十六进制和十进制数是无法直接相加的, 需要转换成二进制数才可以相加
+ * 这也就导致指针和偏移量运算的结果可能和预期的有所出入
+ */
+
+// 初始化叶子节点的数量
+void initialize_leaf_node(void* node) {
+    // 初始化节点关键字数量
+    *leaf_node_num_cells(node) = 0;
+    // 设置是否为根节点
+    set_node_root(node, false);
+    // 设置节点类型
+    set_node_type(node, TREE_NODE_LEAF);
+    // 设置叶子节点的下一个相邻节点: 0 表示没有相邻节点
+    *leaf_node_next_leaf(node) = 0;
+}
+
 // 获取叶子节点中的关键字数量
 uint32_t* leaf_node_num_cells(void* node) {
     // 基址 + 关键字数量字段的偏移量
@@ -401,14 +428,129 @@ void* leaf_node_value(void* node, uint32_t cell_num) {
     return leaf_node_cell(node, cell_num) + TREE_LEAF_NODE_KEY_SIZE;
 }
 
-// 初始化叶子节点的数量
-void initialize_leaf_node(void* node) {
-    // 初始化节点关键字数量
-    *leaf_node_num_cells(node) = 0;
-    // 设置是否为根节点
+// 查询叶子节点
+Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key) {
+    // 1. 获取节点
+    void* node = get_page(table->pager, page_num);
+    // 2. 获取关键字的数量
+    uint32_t num_cells = *leaf_node_num_cells(node);
+    // 3. 移动游标
+    Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->page_num = page_num;
+    // 4. 二分搜索
+    uint32_t left_index = 0;
+    // 注: 如果这里使用非负整数, 那么索引不能使用 len - 1, 只能使用 len, 使用 len 的问题在于会多循环几次
+    uint32_t right_index = num_cells;
+    while (left_index < right_index) {
+        // 5. 计算中间的索引
+        uint32_t mid_index = left_index + ((right_index - left_index) >> 1);
+        // 6. 获取中间的关键字的 key
+        uint32_t mid_value = *leaf_node_key(node, mid_index);
+        // 7. 判断是否查找到了
+        if (mid_value == key) {
+            cursor->cell_num = mid_index;
+            return cursor;
+        }
+        // 8. 如果没有查找到
+        if (key < mid_value) {
+            right_index = mid_index;
+        } else {
+            left_index = mid_index + 1;
+        }
+    }
+    cursor->cell_num = left_index;
+    return cursor;
+}
+
+// 查询叶子节点相邻的下一个节点
+uint32_t* leaf_node_next_leaf(void* node) {
+    return node + TREE_LEAF_NODE_NEXT_LEAF_OFFSET;
+}
+
+// 插入叶子节点
+void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value) {
+    // 1. 获取叶子节点
+    void* node = get_page(cursor->table->pager, cursor->page_num);
+    // 2. 获取关键字数量
+    uint32_t cell_nums = *leaf_node_num_cells(node);
+    // 3. 判断节点的关键字数量是否超过限制, 需要分裂
+    if (cell_nums >= TREE_LEAF_NODE_MAX_CELLS) {
+        // 注: 叶子节点分裂
+        leaf_node_split_and_insert(cursor, key, value);
+        return;
+    }
+    // 4. 判断应该在哪里插入关键字
+    if (cursor->cell_num < cell_nums) {
+        // 注: 将需要插入的位置之后的数据全部向后移动, 空出来这个位置后再插入
+        for (uint32_t index = cell_nums; index > cursor->cell_num; index--) {
+            memcpy(leaf_node_cell(node, index),
+                   leaf_node_cell(node, index - 1), TREE_LEAF_NODE_CELL_SIZE);
+        }
+    }
+    // 5. 增加关键字数量
+    *(leaf_node_num_cells(node)) += 1;
+    // 6. 保存关键字的 key
+    *(leaf_node_key(node, cursor->cell_num)) = key;
+    // 7. 保存关键字的 value: void* 类型无法赋值, 只能拷贝
+    serialize_row(value, leaf_node_value(node, cursor->cell_num));
+}
+
+// 分裂并插入叶子节点
+void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value) {
+    // 1. 获取需要分裂的节点, 也就是当前节点
+    void* old_node = get_page(cursor->table->pager, cursor->page_num);
+    // 2. 找到还没有使用的页内存, 作为新的节点
+    uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
+    // 3. 获取分裂后的新节点
+    void* new_node = get_page(cursor->table->pager, new_page_num);
+    // 4. 初始化新生成的节点
+    initialize_leaf_node(new_node);
+    // 5. 单向链表插入节点
+    *leaf_node_next_leaf(new_node) = *leaf_node_next_leaf(old_node);
+    *leaf_node_next_leaf(old_node) = new_page_num;
+    // 6. 将旧节点中一半的关键字都移动到新节点中
+    for (int32_t index = TREE_LEAF_NODE_MAX_CELLS; index >= 0; index--) {
+        // 6.1 根据分裂的阈值判断目的节点是谁
+        void* destination_node = index >= TREE_LEAF_NODE_LEFT_SPLIT_COUNT ? new_node: old_node;
+        // 6.2 重新定位关键字在目的节点中的位置
+        uint32_t index_within_node = index % TREE_LEAF_NODE_LEFT_SPLIT_COUNT;
+        // 6.3 获取关键字应该在的地址
+        void* destination = leaf_node_cell(destination_node, index_within_node);
+        // 6.4 如果是新插入的关键字, 那么需要序列化到节点中
+        if (index == cursor->cell_num) {
+            // 注1: 此前分裂的时候只保存了 value 而没有保存 key
+            // 注2: 此前取的地址是整个 cell 的地址, value 是从 key 的位置开始保存的, 所以读出来的数据会有问题
+            *leaf_node_key(destination_node, index_within_node) = key;
+            serialize_row(value, leaf_node_value(destination_node, index_within_node));
+        } else if (index > cursor->cell_num) {
+            // 6.5 如果需要移动的节点比新插入的关键字大, 那么就将 index - 1 的位置拷贝过去, 因为索引是从长度开始算的
+            memcpy(destination, leaf_node_cell(old_node, index - 1), TREE_LEAF_NODE_CELL_SIZE);
+        } else {
+            // 6.6 如果需要移动的节点比新插入的关键字小, 那么就将 index 的位置拷贝过去, 因为已经新插入了一个关键字, 所以直接使用索引是对的
+            memcpy(destination, leaf_node_cell(old_node, index), TREE_LEAF_NODE_CELL_SIZE);
+        }
+    }
+    // 7. 更新每个节点的关键字数量
+    *(leaf_node_num_cells(old_node)) = TREE_LEAF_NODE_LEFT_SPLIT_COUNT;
+    *(leaf_node_num_cells(new_node)) = TREE_LEAF_NODE_RIGHT_SPLIT_COUNT;
+    // 8. 生成父节点并记录分裂的两个节点
+    if (is_node_root(old_node)) {
+        return create_new_root(cursor->table, new_page_num);
+    } else {
+        printf("need to implement updating parent after split\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+// 初始化内部节点
+void initialize_internal_node(void* node) {
+    // 1. 设置是否为根节点
     set_node_root(node, false);
-    // 设置节点类型
-    set_node_type(node, TREE_NODE_LEAF);
+    // 2. 设置节点类型
+    set_node_type(node, TREE_NODE_INTERNAL);
+    // 3. 设置节点的关键字数量
+    *internal_node_num_keys(node) = 0;
 }
 
 // 获取内部节点的关键字数量
@@ -450,150 +592,6 @@ uint32_t* internal_node_child(void* node, uint32_t child_num) {
     }
 }
 
-// 初始化内部节点
-void initialize_internal_node(void* node) {
-    // 1. 设置是否为根节点
-    set_node_root(node, false);
-    // 2. 设置节点类型
-    set_node_type(node, TREE_NODE_INTERNAL);
-    // 3. 设置节点的关键字数量
-    *internal_node_num_keys(node) = 0;
-}
-
-// 创建新的节点
-void create_new_root(Table* table, uint32_t right_child_page_num) {
-    // 1. 获取原本的根节点
-    void* root = get_page(table->pager, table->root_page_num);
-    // 2. 获取新的节点, 也就是右边的节点, 好像没有用到?
-    void* right_child = get_page(table->pager, right_child_page_num);
-    // 3. 为左边的节点找一块新的内存
-    uint32_t left_child_page_num = get_unused_page_num(table->pager);
-    // 4. 获取新的节点, 但是是左边的节点
-    void* left_child = get_page(table->pager, left_child_page_num);
-    // 5. 将原本根节点的内容拷贝到左边的节点
-    memcpy(left_child, root, PAGE_SIZE);
-    // 6. 设置左边的节点为非根节点
-    set_node_root(left_child, false);
-    // 7. 重新初始化根节点
-    initialize_internal_node(root);
-    // 8. 重新设置旧的节点为根节点: 原来初始化的时候是叶子节点
-    set_node_root(root, true);
-    // 9. 重新设置根节点关键字数量为 1, 因为就分裂了两个节点, 所以根节点只有一个关键字
-    *internal_node_num_keys(root) = 1;
-    // 10. 设置根节点的关键字的 value - 子节点的指针, 或者说页号
-    *internal_node_child(root, 0) = left_child_page_num;
-    // 11. 获取左子节点的最大关键字
-    uint32_t left_child_max_key = get_node_max_key(left_child);
-    // 12. 重新设置根节点的关键字的 key
-    *internal_node_key(root, 0) = left_child_max_key;
-    // 13. 最后再将最后一个子节点设置到根节点中
-    *internal_node_right_child(root) = right_child_page_num;
-}
-
-// 插入叶子节点
-void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value) {
-    // 1. 获取叶子节点
-    void* node = get_page(cursor->table->pager, cursor->page_num);
-    // 2. 获取关键字数量
-    uint32_t cell_nums = *leaf_node_num_cells(node);
-    // 3. 判断节点的关键字数量是否超过限制, 需要分裂
-    if (cell_nums >= TREE_LEAF_NODE_MAX_CELLS) {
-        // 注: 叶子节点分裂
-        leaf_node_split_and_insert(cursor, key, value);
-        return;
-    }
-    // 4. 判断应该在哪里插入关键字
-    if (cursor->cell_num < cell_nums) {
-        // 注: 将需要插入的位置之后的数据全部向后移动, 空出来这个位置后再插入
-        for (uint32_t index = cell_nums; index > cursor->cell_num; index--) {
-            memcpy(leaf_node_cell(node, index),
-                   leaf_node_cell(node, index - 1), TREE_LEAF_NODE_CELL_SIZE);
-        }
-    }
-    // 5. 增加关键字数量
-    *(leaf_node_num_cells(node)) += 1;
-    // 6. 保存关键字的 key
-    *(leaf_node_key(node, cursor->cell_num)) = key;
-    // 7. 保存关键字的 value: void* 类型无法赋值, 只能拷贝
-    serialize_row(value, leaf_node_value(node, cursor->cell_num));
-}
-
-// 分裂并插入叶子节点
-void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value) {
-    // 1. 获取需要分裂的节点, 也就是当前节点
-    void* old_node = get_page(cursor->table->pager, cursor->page_num);
-    // 2. 找到还没有使用的页内存, 作为新的节点
-    uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
-    // 3. 获取分裂后的新节点
-    void* new_node = get_page(cursor->table->pager, new_page_num);
-    // 4. 初始化新生成的节点
-    initialize_leaf_node(new_node);
-    // 5. 将旧节点中一半的关键字都移动到新节点中
-    for (int32_t index = TREE_LEAF_NODE_MAX_CELLS; index >= 0; index--) {
-        // 5.1 根据分裂的阈值判断目的节点是谁
-        void* destination_node = index >= TREE_LEAF_NODE_LEFT_SPLIT_COUNT ? new_node: old_node;
-        // 5.2 重新定位关键字在目的节点中的位置
-        uint32_t index_within_node = index % TREE_LEAF_NODE_LEFT_SPLIT_COUNT;
-        // 5.3 获取关键字应该在的地址
-        void* destination = leaf_node_cell(destination_node, index_within_node);
-        // 5.4 如果是新插入的关键字, 那么需要序列化到节点中
-        if (index == cursor->cell_num) {
-            serialize_row(value, destination);
-        } else if (index > cursor->cell_num) {
-            // 5.5 如果需要移动的节点比新插入的关键字大, 那么就将 index - 1 的位置拷贝过去, 因为索引是从长度开始算的
-            memcpy(destination, leaf_node_cell(old_node, index - 1), TREE_LEAF_NODE_CELL_SIZE);
-        } else {
-            // 5.6 如果需要移动的节点比新插入的关键字小, 那么就将 index 的位置拷贝过去, 因为已经新插入了一个关键字, 所以直接使用索引是对的
-            memcpy(destination, leaf_node_cell(old_node, index), TREE_LEAF_NODE_CELL_SIZE);
-        }
-    }
-    // 6. 更新每个节点的关键字数量
-    *(leaf_node_num_cells(old_node)) = TREE_LEAF_NODE_LEFT_SPLIT_COUNT;
-    *(leaf_node_num_cells(new_node)) = TREE_LEAF_NODE_RIGHT_SPLIT_COUNT;
-    // 7. 生成父节点并记录分裂的两个节点
-    if (is_node_root(old_node)) {
-        return create_new_root(cursor->table, new_page_num);
-    } else {
-        printf("need to implement updating parent after split\n");
-        exit(EXIT_FAILURE);
-    }
-}
-
-// 查询叶子节点
-Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key) {
-    // 1. 获取节点
-    void* node = get_page(table->pager, page_num);
-    // 2. 获取关键字的数量
-    uint32_t num_cells = *leaf_node_num_cells(node);
-    // 3. 移动游标
-    Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
-    cursor->table = table;
-    cursor->page_num = page_num;
-    // 4. 二分搜索
-    uint32_t left_index = 0;
-    // 注: 如果这里使用非负整数, 那么索引不能使用 len - 1, 只能使用 len, 使用 len 的问题在于会多循环几次
-    uint32_t right_index = num_cells;
-    while (left_index < right_index) {
-        // 5. 计算中间的索引
-        uint32_t mid_index = left_index + ((right_index - left_index) >> 1);
-        // 6. 获取中间的关键字的 key
-        uint32_t mid_value = *leaf_node_key(node, mid_index);
-        // 7. 判断是否查找到了
-        if (mid_value == key) {
-            cursor->cell_num = mid_index;
-            return cursor;
-        }
-        // 8. 如果没有查找到
-        if (key < mid_value) {
-            right_index = mid_index;
-        } else {
-            left_index = mid_index + 1;
-        }
-    }
-    cursor->cell_num = left_index;
-    return cursor;
-}
-
 // 查询内部节点
 Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key) {
     // 1. 查询节点
@@ -627,6 +625,36 @@ Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key) {
         case TREE_NODE_INTERNAL:
             return internal_node_find(table, child_num, key);
     }
+}
+
+// 创建新的节点
+void create_new_root(Table* table, uint32_t right_child_page_num) {
+    // 1. 获取原本的根节点
+    void* root = get_page(table->pager, table->root_page_num);
+    // 2. 获取新的节点, 也就是右边的节点, 好像没有用到?
+    void* right_child = get_page(table->pager, right_child_page_num);
+    // 3. 为左边的节点找一块新的内存
+    uint32_t left_child_page_num = get_unused_page_num(table->pager);
+    // 4. 获取新的节点, 但是是左边的节点
+    void* left_child = get_page(table->pager, left_child_page_num);
+    // 5. 将原本根节点的内容拷贝到左边的节点
+    memcpy(left_child, root, PAGE_SIZE);
+    // 6. 设置左边的节点为非根节点
+    set_node_root(left_child, false);
+    // 7. 重新初始化根节点
+    initialize_internal_node(root);
+    // 8. 重新设置旧的节点为根节点: 原来初始化的时候是叶子节点
+    set_node_root(root, true);
+    // 9. 重新设置根节点关键字数量为 1, 因为就分裂了两个节点, 所以根节点只有一个关键字
+    *internal_node_num_keys(root) = 1;
+    // 10. 设置根节点的关键字的 value - 子节点的指针, 或者说页号
+    *internal_node_child(root, 0) = left_child_page_num;
+    // 11. 获取左子节点的最大关键字
+    uint32_t left_child_max_key = get_node_max_key(left_child);
+    // 12. 重新设置根节点的关键字的 key
+    *internal_node_key(root, 0) = left_child_max_key;
+    // 13. 最后再将最后一个子节点设置到根节点中
+    *internal_node_right_child(root) = right_child_page_num;
 }
 
 // 获取节点类型
@@ -787,6 +815,7 @@ Table* db_open(const char* filename) {
     table->pager = pager;
     return table;
 }
+
 // 关闭表
 void db_close(Table* table) {
     // 1. 获取调度器和总页数
@@ -833,18 +862,13 @@ void db_close(Table* table) {
 
 // 初始化游标在表的起始位置
 Cursor* table_start(Table* table) {
-    // 1. 给游标分配内存
-    Cursor* cursor = (Cursor*) malloc(sizeof(Cursor));
-    // 2. 初始化游标属性
-    cursor->table = table;
-    cursor->page_num = table->root_page_num;
-    cursor->cell_num = 0;
-    // 3. 获取根节点
-    void* node = get_page(table->pager, table->root_page_num);
-    // 4. 获取根节点关键字的数量
-    uint32_t num_cells = *leaf_node_num_cells(node);
-    // 5. 判断是否在表的末尾: 通过关键字的数量来判断, 如果没有任何关键字, 那么肯定是在末尾
-    cursor->end_of_table = (num_cells == 0);
+    // 1. 查询表中最小的行记录
+    Cursor* cursor = table_find(table, 0);
+    // 2. 获取游标指向的页节点的地址
+    void* node = get_page(table->pager, cursor->page_num);
+    // 3. 判断游标是否在末尾
+    cursor->end_of_table = (*leaf_node_num_cells(node) == 0);
+    // 4. 返回游标
     return cursor;
 }
 
@@ -880,9 +904,17 @@ void cursor_advance(Cursor* cursor) {
     void* node = get_page(cursor->table->pager, page_num);
     // 3. 增加关键字的数量
     cursor->cell_num++;
-    // 4. 判断游标是否在末尾
+    // 4. 判断游标是否已经移动到叶子节点的末尾
     if (cursor->cell_num >= (*leaf_node_num_cells(node))) {
-        cursor->end_of_table = true;
+        // 4.1 获取叶子节点相邻的下一个叶子节点的页号
+        uint32_t next_page_num = *leaf_node_next_leaf(node);
+        // 4.2 判断叶子节点是否存在下一个相邻叶子节点
+        if (next_page_num == 0) {
+            cursor->end_of_table = true;
+        } else {
+            cursor->page_num = next_page_num;
+            cursor->cell_num = 0;
+        }
     }
 }
 
